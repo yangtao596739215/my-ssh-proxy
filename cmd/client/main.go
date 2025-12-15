@@ -11,10 +11,12 @@ import (
 	"strings"
 	"syscall"
 
+	"path/filepath"
+
 	gossh "golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 
 	"my-ssh-proxy/pkg/keyring"
-	"my-ssh-proxy/pkg/protocol"
 )
 
 func main() {
@@ -30,17 +32,23 @@ func main() {
 
 	log.Printf("[client] starting server=%s backend-key=%s listen=%s", *serverAddr, *backendKey, *listenAddr)
 
-	signer, authorized, err := keyring.EnsureKeyPair(keyring.DirectKeyName)
+	signer, _, err := keyring.LoadDefaultSigner()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "load direct key: %v\n", err)
+		fmt.Fprintf(os.Stderr, "load default key: %v\n", err)
 		os.Exit(1)
 	}
-	log.Printf("[client] loaded key path=~/.ssh/myproxy/%s.*", keyring.DirectKeyName)
+	log.Printf("[client] loaded key path=~/.ssh/id_rsa(.pub)")
+
+	cb, err := loadKnownHostsCallback()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "known_hosts: %v\n", err)
+		os.Exit(1)
+	}
 
 	cfg := &gossh.ClientConfig{
 		User:            "direct",
 		Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
-		HostKeyCallback: gossh.InsecureIgnoreHostKey(),
+		HostKeyCallback: cb,
 	}
 
 	client, err := gossh.Dial("tcp", *serverAddr, cfg)
@@ -50,13 +58,6 @@ func main() {
 	}
 	defer client.Close()
 	log.Printf("[client] connected to server=%s", *serverAddr)
-
-	if err := pushAuthorizedKey(client, "direct", strings.TrimSpace(string(authorized))); err != nil {
-		fmt.Fprintf(os.Stderr, "update authorized key: %v\n", err)
-		log.Printf("[client] update-authorized-key failed: %v", err)
-	} else {
-		log.Printf("[client] update-authorized-key success user=direct")
-	}
 
 	ln, err := net.Listen("tcp", *listenAddr)
 	if err != nil {
@@ -113,21 +114,6 @@ func handleLocalConn(local net.Conn, client *gossh.Client, socketPath string) {
 	proxyIO(local, ch)
 }
 
-func pushAuthorizedKey(client *gossh.Client, user string, authorized string) error {
-	payload := gossh.Marshal(&protocol.UpdateAuthKeyRequest{
-		User:          user,
-		AuthorizedKey: authorized,
-	})
-	ok, _, err := client.SendRequest(protocol.UpdateAuthKeyRequestType, true, payload)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("server rejected update authorization request")
-	}
-	return nil
-}
-
 func proxyIO(a io.ReadWriteCloser, b io.ReadWriteCloser) {
 	defer a.Close()
 	defer b.Close()
@@ -142,4 +128,13 @@ func proxyIO(a io.ReadWriteCloser, b io.ReadWriteCloser) {
 		done <- struct{}{}
 	}()
 	<-done
+}
+
+func loadKnownHostsCallback() (gossh.HostKeyCallback, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(home, keyring.DefaultKnownHosts)
+	return knownhosts.New(path)
 }

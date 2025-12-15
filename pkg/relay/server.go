@@ -9,7 +9,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -82,8 +81,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	defer ln.Close()
 
 	sshCfg := &gossh.ServerConfig{
-		// 完全跳过认证，客户端用户名仍用于后续路由判断。
-		NoClientAuth: true,
+		PublicKeyCallback: s.publicKeyCallback,
 	}
 	sshCfg.AddHostKey(s.cfg.HostKey)
 
@@ -111,6 +109,30 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	}
 }
 
+func (s *Server) publicKeyCallback(meta gossh.ConnMetadata, key gossh.PublicKey) (*gossh.Permissions, error) {
+	var allowed []gossh.PublicKey
+	s.mu.RLock()
+	switch meta.User() {
+	case "direct":
+		allowed = s.directK[meta.User()]
+	case "proxy":
+		allowed = s.proxyK[meta.User()]
+	default:
+		s.mu.RUnlock()
+		return nil, fmt.Errorf("unauthorized user %s", meta.User())
+	}
+	s.mu.RUnlock()
+
+	for _, k := range allowed {
+		if keysEqual(k, key) {
+			return &gossh.Permissions{
+				Extensions: map[string]string{"user": meta.User()},
+			}, nil
+		}
+	}
+	return nil, fmt.Errorf("public key rejected for %s", meta.User())
+}
+
 func (s *Server) handleConn(ctx context.Context, rawConn net.Conn, sshCfg *gossh.ServerConfig) {
 	defer rawConn.Close()
 
@@ -123,14 +145,15 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn, sshCfg *gossh
 
 	log.Printf("[server] new connection from=%s user=%s", sshConn.RemoteAddr(), sshConn.User())
 
-	// 未提供认证，用户名仅用来分流；未知用户按 direct 路径处理，避免外部工具用默认用户名被拒。
 	user := sshConn.User()
-	if user == "proxy" {
+	switch user {
+	case "proxy":
 		s.handleProxyConn(ctx, sshConn, chans, reqs)
-		return
+	case "direct":
+		s.handleDirectConn(ctx, sshConn, chans, reqs)
+	default:
+		sshConn.Close()
 	}
-	// 默认 direct 行为
-	s.handleDirectConn(ctx, sshConn, chans, reqs)
 }
 
 func (s *Server) handleProxyConn(ctx context.Context, conn *gossh.ServerConn, chans <-chan gossh.NewChannel, reqs <-chan *gossh.Request) {
@@ -153,15 +176,7 @@ func (s *Server) handleProxyConn(ctx context.Context, conn *gossh.ServerConn, ch
 	}()
 
 	for req := range reqs {
-		switch req.Type {
-		case protocol.UpdateAuthKeyRequestType:
-			ok := s.handleUpdateKey(req)
-			log.Printf("[server] proxy update-authorized-key user=%s ok=%v", conn.User(), ok)
-			req.Reply(ok, nil)
-			continue
-		case protocol.ForwardRequestType:
-			// handled below
-		default:
+		if req.Type != protocol.ForwardRequestType {
 			log.Printf("[server] proxy unknown request type=%s from=%s", req.Type, conn.RemoteAddr())
 			req.Reply(false, nil)
 			continue
@@ -211,12 +226,6 @@ func (s *Server) handleProxyConn(ctx context.Context, conn *gossh.ServerConn, ch
 func (s *Server) handleDirectConn(ctx context.Context, conn *gossh.ServerConn, chans <-chan gossh.NewChannel, reqs <-chan *gossh.Request) {
 	go func() {
 		for req := range reqs {
-			if req.Type == protocol.UpdateAuthKeyRequestType {
-				ok := s.handleUpdateKey(req)
-				log.Printf("[server] direct update-authorized-key user=%s ok=%v", conn.User(), ok)
-				_ = req.Reply(ok, nil)
-				continue
-			}
 			log.Printf("[server] direct unknown request type=%s from=%s", req.Type, conn.RemoteAddr())
 			req.Reply(false, nil)
 		}
@@ -319,43 +328,6 @@ func keysEqual(a, b gossh.PublicKey) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare(ab, bb) == 1
-}
-
-// handleUpdateKey parses and stores a new authorized key for the given user.
-// It returns true on success.
-func (s *Server) handleUpdateKey(req *gossh.Request) bool {
-	var payload protocol.UpdateAuthKeyRequest
-	if err := gossh.Unmarshal(req.Payload, &payload); err != nil {
-		return false
-	}
-	if payload.User == "" || strings.TrimSpace(payload.AuthorizedKey) == "" {
-		log.Printf("[server] update-authorized-key invalid payload user='%s'", payload.User)
-		return false
-	}
-	key, _, _, _, err := gossh.ParseAuthorizedKey([]byte(payload.AuthorizedKey))
-	if err != nil {
-		log.Printf("[server] update-authorized-key parse key failed user=%s: %v", payload.User, err)
-		return false
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	target := s.directK
-	if payload.User == "proxy" {
-		target = s.proxyK
-	}
-
-	existing := target[payload.User]
-	for _, k := range existing {
-		if keysEqual(k, key) {
-			log.Printf("[server] update-authorized-key user=%s: key already exists", payload.User)
-			return true // already present
-		}
-	}
-	target[payload.User] = append(existing, key)
-	log.Printf("[server] update-authorized-key user=%s: key added, total=%d", payload.User, len(target[payload.User]))
-	return true
 }
 
 func (s *Server) storeKey(user string, key gossh.PublicKey) {

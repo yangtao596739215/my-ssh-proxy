@@ -15,7 +15,10 @@ import (
 	"strings"
 	"syscall"
 
+	"path/filepath"
+
 	gossh "golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 
 	"my-ssh-proxy/pkg/keyring"
 	"my-ssh-proxy/pkg/protocol"
@@ -37,17 +40,23 @@ func main() {
 
 	log.Printf("[backen] starting server=%s user=%s backend-key=%s local=%s sshserver=%v", *serverAddr, *user, backendKey, *localTarget, *enableLocalSSH)
 
-	signer, authorized, err := keyring.EnsureKeyPair(keyring.ProxyKeyName)
+	signer, _, err := keyring.LoadDefaultSigner()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "load proxy key: %v\n", err)
+		fmt.Fprintf(os.Stderr, "load default key: %v\n", err)
 		os.Exit(1)
 	}
-	log.Printf("[backen] loaded key path=~/.ssh/myproxy/%s.*", keyring.ProxyKeyName)
+	log.Printf("[backen] loaded key path=~/.ssh/id_rsa(.pub)")
+
+	cb, err := loadKnownHostsCallback()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "known_hosts: %v\n", err)
+		os.Exit(1)
+	}
 
 	cfg := &gossh.ClientConfig{
 		User:            *user,
 		Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
-		HostKeyCallback: gossh.InsecureIgnoreHostKey(),
+		HostKeyCallback: cb,
 	}
 
 	client, err := gossh.Dial("tcp", *serverAddr, cfg)
@@ -58,24 +67,9 @@ func main() {
 	defer client.Close()
 	log.Printf("[backen] connected to server=%s", *serverAddr)
 
-	// Push our public key to server so it can accept future connections.
-	pubKey := strings.TrimSpace(string(authorized))
-	updatePayload := gossh.Marshal(&protocol.UpdateAuthKeyRequest{
-		User:          *user,
-		AuthorizedKey: pubKey,
-	})
-	ok, _, err := client.SendRequest(protocol.UpdateAuthKeyRequestType, true, updatePayload)
-	if err != nil || !ok {
-		fmt.Fprintf(os.Stderr, "update authorized key failed: ok=%v err=%v\n", ok, err)
-		log.Printf("[backen] update-authorized-key failed ok=%v err=%v", ok, err)
-		// not fatal; continue
-	} else {
-		log.Printf("[backen] update-authorized-key success user=%s", *user)
-	}
-
 	// Request remote streamlocal forward
 	payload := gossh.Marshal(&protocol.RemoteForwardRequest{BindUnixSocket: backendKey})
-	ok, _, err = client.SendRequest(protocol.ForwardRequestType, true, payload)
+	ok, _, err := client.SendRequest(protocol.ForwardRequestType, true, payload)
 	if err != nil || !ok {
 		fmt.Fprintf(os.Stderr, "request streamlocal forward failed: ok=%v err=%v\n", ok, err)
 		os.Exit(1)
@@ -133,6 +127,15 @@ func main() {
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	<-sigCh
 	fmt.Println("exit")
+}
+
+func loadKnownHostsCallback() (gossh.HostKeyCallback, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(home, keyring.DefaultKnownHosts)
+	return knownhosts.New(path)
 }
 
 // ioCopy is a thin wrapper to avoid importing the full io.Copy twice.
@@ -278,7 +281,7 @@ func handleSSH(raw net.Conn, cfg *gossh.ServerConfig) {
 				newCh.Reject(gossh.UnknownChannelType, "bad direct-tcpip payload")
 				continue
 			}
-			target := fmt.Sprintf("%s:%d", data.Host, data.Port)
+			target := net.JoinHostPort(data.Host, fmt.Sprintf("%d", data.Port))
 			dial, err := net.Dial("tcp", target)
 			if err != nil {
 				newCh.Reject(gossh.ConnectionFailed, err.Error())

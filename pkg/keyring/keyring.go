@@ -28,6 +28,13 @@ const (
 	marker        = "myproxy-ed25519"
 )
 
+// Default key paths (legacy RSA).
+const (
+	DefaultPrivateKey = ".ssh/id_rsa"
+	DefaultPublicKey  = ".ssh/id_rsa.pub"
+	DefaultKnownHosts = ".ssh/known_hosts"
+)
+
 // EnsureKeyPair makes sure the named key pair exists under ~/.ssh/myproxy and
 // returns the signer plus its authorized-key bytes (RFC4253 format).
 func EnsureKeyPair(name string) (gossh.Signer, []byte, error) {
@@ -80,6 +87,51 @@ func PublicKey(name string) (gossh.PublicKey, error) {
 		return nil, fmt.Errorf("parse authorized key for %s: %w", name, err)
 	}
 	return pub, nil
+}
+
+// LoadDefaultSigner loads ~/.ssh/id_rsa and returns signer + authorized bytes.
+func LoadDefaultSigner() (gossh.Signer, []byte, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve home: %w", err)
+	}
+	privPath := filepath.Join(home, DefaultPrivateKey)
+	pubPath := filepath.Join(home, DefaultPublicKey)
+
+	signer, err := loadRsaSigner(privPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	pubBytes, err := os.ReadFile(pubPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read public key %s: %w", pubPath, err)
+	}
+	return signer, pubBytes, nil
+}
+
+// LoadDefaultPublicKey parses ~/.ssh/id_rsa.pub.
+func LoadDefaultPublicKey() (gossh.PublicKey, error) {
+	_, auth, err := LoadDefaultSigner()
+	if err != nil {
+		return nil, err
+	}
+	pub, _, _, _, err := gossh.ParseAuthorizedKey(auth)
+	if err != nil {
+		return nil, fmt.Errorf("parse default public key: %w", err)
+	}
+	return pub, nil
+}
+
+func loadRsaSigner(path string) (gossh.Signer, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read private key %s: %w", path, err)
+	}
+	signer, err := gossh.ParsePrivateKey(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse private key %s: %w", path, err)
+	}
+	return signer, nil
 }
 
 func ensureBaseDir() (string, error) {
