@@ -82,7 +82,8 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	defer ln.Close()
 
 	sshCfg := &gossh.ServerConfig{
-		PublicKeyCallback: s.publicKeyCallback,
+		// 完全跳过认证，客户端用户名仍用于后续路由判断。
+		NoClientAuth: true,
 	}
 	sshCfg.AddHostKey(s.cfg.HostKey)
 
@@ -107,17 +108,6 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		tempDelay = 0
 
 		go s.handleConn(ctx, conn, sshCfg)
-	}
-}
-
-func (s *Server) publicKeyCallback(meta gossh.ConnMetadata, key gossh.PublicKey) (*gossh.Permissions, error) {
-	switch meta.User() {
-	case "direct", "proxy":
-		return &gossh.Permissions{
-			Extensions: map[string]string{"user": meta.User()},
-		}, nil
-	default:
-		return nil, fmt.Errorf("unauthorized user %s", meta.User())
 	}
 }
 

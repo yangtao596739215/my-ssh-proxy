@@ -133,7 +133,7 @@ client 行为：
   3. 若开启 `-allow-bootstrap`，当某用户尚无白名单公钥时，第一次连接的公钥会被接受并记忆。
 
 认证流程：
-- SSH 握手阶段由 `publicKeyCallback` 对 `direct` / `proxy` 用户的公钥进行匹配（包含 bootstrap）。
+- SSH 握手阶段已取消公钥校验；`direct` / `proxy` 仅依用户名区分。
 - 连接建立后，才会处理 `update-authorized-key`、`streamlocal-forward` 等请求。
 
 ### 5. 调试与常见问题
