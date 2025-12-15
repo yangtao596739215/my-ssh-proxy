@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"os/user"
 	"strings"
+	"sync"
 	"syscall"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -33,6 +34,7 @@ func main() {
 	user := flag.String("user", "proxy", "SSH user for backend registration")
 	localTarget := flag.String("local", "127.0.0.1:9000", "Local target to forward to")
 	enableLocalSSH := flag.Bool("sshserver", false, "Start a local ssh server on -local for testing (basic shell, public-key auth)")
+	allowLocalBootstrap := flag.Bool("sshserver-bootstrap", true, "When sshserver is enabled, accept and remember the first presented key if no authorized keys are present")
 	flag.Parse()
 
 	backendKey := mustRandomKey()
@@ -86,7 +88,7 @@ func main() {
 
 	if *enableLocalSSH {
 		go func() {
-			if err := startLocalSSH(*localTarget); err != nil {
+			if err := startLocalSSH(*localTarget, *allowLocalBootstrap); err != nil {
 				log.Printf("[backen] local ssh server error: %v", err)
 			}
 		}()
@@ -178,7 +180,8 @@ func mustRandomKey() string {
 //  2. myproxy 的 direct/proxy 公钥（若存在）
 //
 // shell：使用 /bin/sh，接受 session channel 的 shell 请求；简单应答 pty-req/exec/env。
-func startLocalSSH(localTarget string) error {
+// allowBootstrap 为真时，如果当前未加载任何已授权公钥，则第一把连接上来的公钥会被接受并缓存到内存。
+func startLocalSSH(localTarget string, allowBootstrap bool) error {
 	host, port, err := net.SplitHostPort(localTarget)
 	if err != nil {
 		return fmt.Errorf("parse local target: %w", err)
@@ -193,14 +196,25 @@ func startLocalSSH(localTarget string) error {
 	}
 
 	authorized := loadAuthorizedKeys()
+	var mu sync.Mutex
 	cfg := &gossh.ServerConfig{
 		PublicKeyCallback: func(c gossh.ConnMetadata, key gossh.PublicKey) (*gossh.Permissions, error) {
+			mu.Lock()
+			defer mu.Unlock()
+
 			for _, k := range authorized {
 				if keysEqual(k, key) {
 					log.Printf("[backen-sshd] auth ok user=%s remote=%s", c.User(), c.RemoteAddr())
 					return &gossh.Permissions{}, nil
 				}
 			}
+
+			if allowBootstrap && len(authorized) == 0 {
+				authorized = append(authorized, key)
+				log.Printf("[backen-sshd] bootstrap key accepted for user=%s remote=%s", c.User(), c.RemoteAddr())
+				return &gossh.Permissions{}, nil
+			}
+
 			log.Printf("[backen-sshd] auth fail user=%s remote=%s", c.User(), c.RemoteAddr())
 			return nil, fmt.Errorf("unauthorized key")
 		},
