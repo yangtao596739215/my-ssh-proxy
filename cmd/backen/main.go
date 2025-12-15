@@ -47,16 +47,16 @@ func main() {
 	}
 	log.Printf("[backen] loaded key path=~/.ssh/id_rsa(.pub)")
 
-	// cb, err := loadKnownHostsCallback()
-	// if err != nil {
-	// 	fmt.Fprintf(os.Stderr, "known_hosts: %v\n", err)
-	// 	os.Exit(1)
-	// }
+	cb, err := loadKnownHostsCallback()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "known_hosts: %v\n", err)
+		os.Exit(1)
+	}
 
 	cfg := &gossh.ClientConfig{
 		User:            *user,
 		Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
-		HostKeyCallback: gossh.InsecureIgnoreHostKey(),
+		HostKeyCallback: cb,
 	}
 
 	client, err := gossh.Dial("tcp", *serverAddr, cfg)
@@ -248,13 +248,16 @@ func handleSSH(raw net.Conn, cfg *gossh.ServerConfig) {
 						req.Reply(true, nil)
 						go launchShell(ch, ptyReq)
 					case "exec":
-						// Handle simple "sftp" exec for VSCode compatibility
 						cmd := parseExecCmd(req.Payload)
+						// 兼容 VSCode/Cursor：
+						// - 若 exec 是 sftp 则启动 SFTP 子系统
+						// - 否则将命令交给 /bin/sh -lc 直接执行
 						if cmd == "sftp" || strings.HasPrefix(cmd, "sftp ") {
 							req.Reply(true, nil)
 							go launchSFTP(ch)
 						} else {
-							req.Reply(false, nil)
+							req.Reply(true, nil)
+							go launchExec(ch, cmd)
 						}
 					case "subsystem":
 						sub := parseSubsystem(req.Payload)
@@ -343,6 +346,25 @@ func launchShell(ch gossh.Channel, usePty bool) {
 		if err := cmd.Run(); err != nil {
 			io.WriteString(ch, fmt.Sprintf("shell error: %v\n", err))
 		}
+	}
+}
+
+// launchExec 执行单次 exec 命令，例如 "bash --login -c bash"。
+func launchExec(ch gossh.Channel, command string) {
+	defer ch.Close()
+
+	if strings.TrimSpace(command) == "" {
+		io.WriteString(ch, "empty command\n")
+		return
+	}
+
+	cmd := exec.Command("/bin/sh", "-lc", command)
+	cmd.Stdin = ch
+	cmd.Stdout = ch
+	cmd.Stderr = ch
+
+	if err := cmd.Run(); err != nil {
+		io.WriteString(ch, fmt.Sprintf("exec error: %v\n", err))
 	}
 }
 
