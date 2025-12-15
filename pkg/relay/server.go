@@ -29,13 +29,8 @@ type Config struct {
 	// Authorized public keys for each role.
 	DirectAuthorizedKeys map[string][]gossh.PublicKey
 	ProxyAuthorizedKeys  map[string][]gossh.PublicKey
-
-	// AllowBootstrap, if true, will accept the first presented key for a user
-	// when no authorized key exists yet, and store it in memory for this run.
-	// This avoids manual pre-sharing of keys but assumes the first connect is trusted.
-	AllowBootstrap    bool
-	IdleTimeout       time.Duration
-	KeepAliveInterval time.Duration
+	IdleTimeout          time.Duration
+	KeepAliveInterval    time.Duration
 }
 
 // Server implements a lightweight SSH relay that lets backend agents expose a
@@ -116,36 +111,14 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 }
 
 func (s *Server) publicKeyCallback(meta gossh.ConnMetadata, key gossh.PublicKey) (*gossh.Permissions, error) {
-	var allowed []gossh.PublicKey
-	s.mu.RLock()
 	switch meta.User() {
-	case "direct":
-		allowed = s.directK[meta.User()]
-	case "proxy":
-		allowed = s.proxyK[meta.User()]
-	default:
-		s.mu.RUnlock()
-		return nil, fmt.Errorf("unauthorized user %s", meta.User())
-	}
-	s.mu.RUnlock()
-
-	for _, k := range allowed {
-		if keysEqual(k, key) {
-			return &gossh.Permissions{
-				Extensions: map[string]string{"user": meta.User()},
-			}, nil
-		}
-	}
-
-	// Bootstrap: accept and remember the first key for this user if enabled.
-	if s.cfg.AllowBootstrap && len(allowed) == 0 {
-		s.storeKey(meta.User(), key)
+	case "direct", "proxy":
 		return &gossh.Permissions{
 			Extensions: map[string]string{"user": meta.User()},
 		}, nil
+	default:
+		return nil, fmt.Errorf("unauthorized user %s", meta.User())
 	}
-
-	return nil, fmt.Errorf("public key rejected for %s", meta.User())
 }
 
 func (s *Server) handleConn(ctx context.Context, rawConn net.Conn, sshCfg *gossh.ServerConfig) {

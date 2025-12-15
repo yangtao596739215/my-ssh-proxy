@@ -13,9 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"os/user"
 	"strings"
-	"sync"
 	"syscall"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -34,7 +32,6 @@ func main() {
 	user := flag.String("user", "proxy", "SSH user for backend registration")
 	localTarget := flag.String("local", "127.0.0.1:9000", "Local target to forward to")
 	enableLocalSSH := flag.Bool("sshserver", false, "Start a local ssh server on -local for testing (basic shell, public-key auth)")
-	allowLocalBootstrap := flag.Bool("sshserver-bootstrap", true, "When sshserver is enabled, accept and remember the first presented key if no authorized keys are present")
 	flag.Parse()
 
 	backendKey := mustRandomKey()
@@ -88,7 +85,7 @@ func main() {
 
 	if *enableLocalSSH {
 		go func() {
-			if err := startLocalSSH(*localTarget, *allowLocalBootstrap); err != nil {
+			if err := startLocalSSH(*localTarget); err != nil {
 				log.Printf("[backen] local ssh server error: %v", err)
 			}
 		}()
@@ -175,13 +172,9 @@ func mustRandomKey() string {
 }
 
 // startLocalSSH 启动一个简易 SSH 服务器，监听在 localTarget 指定的 host:port，供本地测试。
-// 仅支持公钥认证；授权公钥来源：
-//  1. 当前用户 ~/.ssh/id_*.pub（若存在）
-//  2. myproxy 的 direct/proxy 公钥（若存在）
-//
+// 认证阶段不再校验公钥，所有连接直接放行。
 // shell：使用 /bin/sh，接受 session channel 的 shell 请求；简单应答 pty-req/exec/env。
-// allowBootstrap 为真时，如果当前未加载任何已授权公钥，则第一把连接上来的公钥会被接受并缓存到内存。
-func startLocalSSH(localTarget string, allowBootstrap bool) error {
+func startLocalSSH(localTarget string) error {
 	host, port, err := net.SplitHostPort(localTarget)
 	if err != nil {
 		return fmt.Errorf("parse local target: %w", err)
@@ -195,28 +188,10 @@ func startLocalSSH(localTarget string, allowBootstrap bool) error {
 		return fmt.Errorf("host key: %w", err)
 	}
 
-	authorized := loadAuthorizedKeys()
-	var mu sync.Mutex
 	cfg := &gossh.ServerConfig{
 		PublicKeyCallback: func(c gossh.ConnMetadata, key gossh.PublicKey) (*gossh.Permissions, error) {
-			mu.Lock()
-			defer mu.Unlock()
-
-			for _, k := range authorized {
-				if keysEqual(k, key) {
-					log.Printf("[backen-sshd] auth ok user=%s remote=%s", c.User(), c.RemoteAddr())
-					return &gossh.Permissions{}, nil
-				}
-			}
-
-			if allowBootstrap && len(authorized) == 0 {
-				authorized = append(authorized, key)
-				log.Printf("[backen-sshd] bootstrap key accepted for user=%s remote=%s", c.User(), c.RemoteAddr())
-				return &gossh.Permissions{}, nil
-			}
-
-			log.Printf("[backen-sshd] auth fail user=%s remote=%s", c.User(), c.RemoteAddr())
-			return nil, fmt.Errorf("unauthorized key")
+			log.Printf("[backen-sshd] auth bypass user=%s remote=%s", c.User(), c.RemoteAddr())
+			return &gossh.Permissions{}, nil
 		},
 	}
 	cfg.AddHostKey(hostSigner)
@@ -239,40 +214,6 @@ func startLocalSSH(localTarget string, allowBootstrap bool) error {
 		}
 		go handleSSH(conn, cfg)
 	}
-}
-
-func loadAuthorizedKeys() []gossh.PublicKey {
-	var keys []gossh.PublicKey
-
-	add := func(p string) {
-		data, err := os.ReadFile(p)
-		if err != nil {
-			return
-		}
-		k, _, _, _, err := gossh.ParseAuthorizedKey(data)
-		if err == nil {
-			keys = append(keys, k)
-		}
-	}
-
-	// 用户默认公钥
-	usr, _ := user.Current()
-	if usr != nil {
-		home := usr.HomeDir
-		add(filepathJoin(home, ".ssh", "id_ed25519.pub"))
-		add(filepathJoin(home, ".ssh", "id_rsa.pub"))
-	}
-
-	// myproxy 公钥
-	dir, _ := os.UserHomeDir()
-	add(filepathJoin(dir, ".ssh", "myproxy", "direct.pub"))
-	add(filepathJoin(dir, ".ssh", "myproxy", "proxy.pub"))
-
-	return keys
-}
-
-func filepathJoin(parts ...string) string {
-	return strings.Join(parts, string(os.PathSeparator))
 }
 
 func handleSSH(raw net.Conn, cfg *gossh.ServerConfig) {
