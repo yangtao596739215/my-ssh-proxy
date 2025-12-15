@@ -163,3 +163,28 @@ client 行为：
 - **清理与重连确定性**：SSH 断开 → socket 关闭 → 路由摘除；重连同名 socket 即可恢复，无需还原内存状态。
 
 
+# 运行
+backen和client的公钥都加入到server的known_hosts中
+
+backen:
+```
+go run ./cmd/backen   -server 127.0.0.1:2222   -user proxy   -local 127.0.0.1:9000   -sshserver
+```
+
+server:
+```
+go run ./cmd/server   -port 2222   -socket-dir /tmp/my-ssh-proxy
+```
+
+client:
+```
+go run ./cmd/client \
+  -server 47.120.42.112:2222 \
+  -backend-key 6BTFW5PNRHZAVGH5FVNABNNKIU \
+  -listen 127.0.0.1:9009
+```
+
+cursor:
+```
+ssh -p localhost 9009
+```
