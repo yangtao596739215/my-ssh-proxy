@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/base32"
 	"flag"
 	"fmt"
@@ -342,18 +341,6 @@ func launchShell(ch gossh.Channel, usePty bool) {
 			io.WriteString(ch, fmt.Sprintf("shell error: %v\n", err))
 		}
 	}
-}
-
-func keysEqual(a, b gossh.PublicKey) bool {
-	if a == nil || b == nil {
-		return false
-	}
-	ab := a.Marshal()
-	bb := b.Marshal()
-	if len(ab) != len(bb) {
-		return false
-	}
-	return subtle.ConstantTimeCompare(ab, bb) == 1
 }
 
 func launchSFTP(ch gossh.Channel) {

@@ -123,15 +123,14 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn, sshCfg *gossh
 
 	log.Printf("[server] new connection from=%s user=%s", sshConn.RemoteAddr(), sshConn.User())
 
+	// 未提供认证，用户名仅用来分流；未知用户按 direct 路径处理，避免外部工具用默认用户名被拒。
 	user := sshConn.User()
-	switch user {
-	case "proxy":
+	if user == "proxy" {
 		s.handleProxyConn(ctx, sshConn, chans, reqs)
-	case "direct":
-		s.handleDirectConn(ctx, sshConn, chans, reqs)
-	default:
-		sshConn.Close()
+		return
 	}
+	// 默认 direct 行为
+	s.handleDirectConn(ctx, sshConn, chans, reqs)
 }
 
 func (s *Server) handleProxyConn(ctx context.Context, conn *gossh.ServerConn, chans <-chan gossh.NewChannel, reqs <-chan *gossh.Request) {
