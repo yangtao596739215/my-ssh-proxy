@@ -312,6 +312,7 @@ func handleSSH(raw net.Conn, cfg *gossh.ServerConfig) {
 					}
 				}
 			}(reqs)
+			//为了兼容vscode
 		case "direct-tcpip":
 			var data struct {
 				Host              string
