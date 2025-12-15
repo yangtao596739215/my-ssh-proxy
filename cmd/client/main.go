@@ -39,16 +39,16 @@ func main() {
 	}
 	log.Printf("[client] loaded key path=~/.ssh/id_rsa(.pub)")
 
-	cb, err := loadKnownHostsCallback()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "known_hosts: %v\n", err)
-		os.Exit(1)
-	}
+	// cb, err := loadKnownHostsCallback()
+	// if err != nil {
+	// 	fmt.Fprintf(os.Stderr, "known_hosts: %v\n", err)
+	// 	os.Exit(1)
+	// }
 
 	cfg := &gossh.ClientConfig{
 		User:            "direct",
 		Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
-		HostKeyCallback: cb,
+		HostKeyCallback: gossh.InsecureIgnoreHostKey(),
 	}
 
 	client, err := gossh.Dial("tcp", *serverAddr, cfg)
