@@ -31,14 +31,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 从 known_hosts 读取授权公钥列表（全部条目作为白名单）。
-	authorizedKeys, err := loadKnownHostsKeys()
+	// 从 ~/.ssh/authorized_keys 读取授权公钥列表（全部条目作为白名单）。
+	authorizedKeys, err := loadAuthorizedKeys()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "load known_hosts: %v\n", err)
+		fmt.Fprintf(os.Stderr, "load authorized_keys: %v\n", err)
 		os.Exit(1)
 	}
 	if len(authorizedKeys) == 0 {
-		fmt.Fprintf(os.Stderr, "known_hosts empty: provide at least one key\n")
+		fmt.Fprintf(os.Stderr, "authorized_keys empty: provide at least one key\n")
 		os.Exit(1)
 	}
 	directAuthorized := map[string][]gossh.PublicKey{"direct": authorizedKeys}
@@ -69,13 +69,13 @@ func main() {
 	}
 }
 
-// loadKnownHostsKeys 读取 ~/.ssh/known_hosts 的所有公钥作为允许列表。
-func loadKnownHostsKeys() ([]gossh.PublicKey, error) {
+// loadAuthorizedKeys 读取 ~/.ssh/authorized_keys 的所有公钥作为允许列表。
+func loadAuthorizedKeys() ([]gossh.PublicKey, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
 	}
-	path := home + "/.ssh/known_hosts"
+	path := home + "/.ssh/authorized_keys"
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
@@ -90,12 +90,7 @@ func loadKnownHostsKeys() ([]gossh.PublicKey, error) {
 		if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) < 3 {
-			continue
-		}
-		keyStr := strings.Join(fields[1:3], " ")
-		pub, _, _, _, err := gossh.ParseAuthorizedKey([]byte(keyStr))
+		pub, _, _, _, err := gossh.ParseAuthorizedKey([]byte(line))
 		if err != nil || pub == nil {
 			continue
 		}
