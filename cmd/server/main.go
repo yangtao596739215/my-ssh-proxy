@@ -30,16 +30,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	directPub, err := keyring.PublicKey(keyring.DirectKeyName)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "load direct public key: %v\n", err)
-		os.Exit(1)
-	}
-
-	proxyPub, err := keyring.PublicKey(keyring.ProxyKeyName)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "load proxy public key: %v\n", err)
-		os.Exit(1)
+	directAuthorized := make(map[string][]gossh.PublicKey)
+	proxyAuthorized := make(map[string][]gossh.PublicKey)
+	if !*allowBootstrap {
+		directPub, err := keyring.PublicKey(keyring.DirectKeyName)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "load direct public key: %v\n", err)
+			os.Exit(1)
+		}
+		proxyPub, err := keyring.PublicKey(keyring.ProxyKeyName)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "load proxy public key: %v\n", err)
+			os.Exit(1)
+		}
+		directAuthorized["direct"] = []gossh.PublicKey{directPub}
+		proxyAuthorized["proxy"] = []gossh.PublicKey{proxyPub}
 	}
 
 	ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", *port))
@@ -49,16 +54,12 @@ func main() {
 	}
 
 	s, err := relay.New(relay.Config{
-		Addr:      fmt.Sprintf("0.0.0.0:%d", *port),
-		SocketDir: *socketDir,
-		HostKey:   hostSigner,
-		DirectAuthorizedKeys: map[string][]gossh.PublicKey{
-			"direct": {directPub},
-		},
-		ProxyAuthorizedKeys: map[string][]gossh.PublicKey{
-			"proxy": {proxyPub},
-		},
-		AllowBootstrap: *allowBootstrap,
+		Addr:                 fmt.Sprintf("0.0.0.0:%d", *port),
+		SocketDir:            *socketDir,
+		HostKey:              hostSigner,
+		DirectAuthorizedKeys: directAuthorized,
+		ProxyAuthorizedKeys:  proxyAuthorized,
+		AllowBootstrap:       *allowBootstrap,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "init relay: %v\n", err)
